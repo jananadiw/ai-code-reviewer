@@ -1,77 +1,59 @@
+import argparse
+import yaml
 import os
-import openai
-from github import Github
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+from github_integration import GitHubIntegration
+from ai_integration import AIIntegration
+from code_analysis import CodeAnalyzer
 
-class GitHubIntegration:
-    def __init__(self, token):
-        self.github = Github(token)
+def load_config(config_path):
+    load_dotenv()
 
-    def get_pull_request(self, repo_name, pr_number):
-        repo = self.github.get_repo(repo_name)
-        return repo.get_pull(pr_number)
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
 
-    def get_pr_diff(self, pull_request):
-        return list(pull_request.get_files())
+    def replace_env_vars(item):
+        if isinstance(item, dict):
+            return {k: replace_env_vars(v) for k, v in item.items()}
+        elif isinstance(item, list):
+            return [replace_env_vars(i) for i in item]
+        elif isinstance(item, str) and item.startswith('${') and item.endswith('}'):
+            env_var = item[2:-1]
+            return os.getenv(env_var, item)
+        else:
+            return item
 
-    def post_review(self, pull_request, review_body):
-        pull_request.create_review(body=review_body)
+    return replace_env_vars(config)
 
-class AIIntegration:
-    def __init__(self, api_key):
-        openai.api_key = api_key
-        self.model = "gpt-3.5-turbo"
-
-    def get_ai_review(self, code_diff):
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a code reviewer. Analyze the following code diff and provide constructive feedback."},
-                {"role": "user", "content": code_diff}
-            ]
-        )
-        return response.choices[0].message['content']
-
-class CodeAnalyzer:
-    def analyze_diff(self, diff):
-        # This is a simple example. You might want to expand this method
-        # to provide more detailed analysis.
-        lines_changed = len(diff.split('\n'))
-        return f"Analysis of diff: {lines_changed} lines changed"
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='AI-Powered Code Reviewer')
+    parser.add_argument('--repo', required=True, help='GitHub repository in format username/repo')
+    parser.add_argument('--pr', type=int, required=True, help='Pull request number')
+    parser.add_argument('--config', default='config/config.yaml', help='Path to configuration file')
+    return parser.parse_args()
 
 def main():
-    # Load environment variables
-    github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    repo_name = os.getenv('REPO_NAME')
-    pr_number = int(os.getenv('PR_NUMBER'))
+    args = parse_arguments()
+    config = load_config(args.config)
 
-    # Initialize integrations
-    github_integration = GitHubIntegration(github_token)
-    ai_integration = AIIntegration(openai_api_key)
+    github_integration = GitHubIntegration(config['github']['token'])
+    ai_integration = AIIntegration(config['openai']['api_key'])
     code_analyzer = CodeAnalyzer()
 
-    # Get pull request
-    pr = github_integration.get_pull_request(repo_name, pr_number)
+    pr = github_integration.get_pull_request(args.repo, args.pr)
+    files = github_integration.get_pr_diff(pr)
 
-    # Get PR diff
-    pr_files = github_integration.get_pr_diff(pr)
+    full_review = []
+    for file in files:
+        analysis = code_analyzer.analyze_diff(file.patch)
+        ai_review = ai_integration.get_ai_review(file.patch)
+        full_review.append(f"File: {file.filename}\nAnalysis: {analysis}\nAI Review: {ai_review}")
 
-    # Analyze diff and get AI review
-    full_diff = "\n".join([f.patch for f in pr_files if f.patch])
-    analysis = code_analyzer.analyze_diff(full_diff)
-    ai_review = ai_integration.get_ai_review(full_diff)
+    full_review_text = "\n\n".join(full_review)
+    github_integration.post_review(pr, full_review_text)
 
-    # Combine analysis and AI review
-    full_review = f"{analysis}\n\nAI Review:\n{ai_review}"
+    print("Review completed and posted.")
 
-    # Post review
-    github_integration.post_review(pr, full_review)
-
-    print("Review posted successfully!")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
