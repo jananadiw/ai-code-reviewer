@@ -1,0 +1,5 @@
+PyGithub
+PyYAML
+python-dotenv
+openai
+pytest
